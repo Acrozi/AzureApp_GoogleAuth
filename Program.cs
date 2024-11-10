@@ -20,7 +20,7 @@ var dbSecretClient = new SecretClient(new Uri(dbKeyVaultUrl), new DefaultAzureCr
 var googleAuthSecretClient = new SecretClient(new Uri(googleAuthKeyVaultUrl), new DefaultAzureCredential());
 
 // Hämta känsliga värden från respektive Key Vault
-var dbConnectionString = dbSecretClient.GetSecret("SqlConnectionString").Value.Value;
+var dbConnectionString = dbSecretClient.GetSecret("SqlConnection").Value.Value;
 var googleClientId = googleAuthSecretClient.GetSecret("ClientId").Value.Value;
 var googleClientSecret = googleAuthSecretClient.GetSecret("ClientSecret").Value.Value;
 
@@ -38,49 +38,43 @@ builder.Services.AddAuthentication(options =>
 {
     options.Events.OnValidatePrincipal = async context =>
     {
+        // För att undvika upprepad bearbetning av samma användare under sessionen
+        if (context.Properties.Items.ContainsKey("Processed"))
+        {
+            Console.WriteLine("User claims already processed for this session.");
+            return;
+        }
+        context.Properties.Items["Processed"] = "true";
+
         var serviceProvider = context.HttpContext.RequestServices;
         using var db = new AppDbContext(serviceProvider.GetRequiredService<DbContextOptions<AppDbContext>>());
 
         string subject = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
         string issuer = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Issuer;
-        
+
         // Försök att hämta namn direkt från claims
         var name = context.Principal?.FindFirst("name")?.Value;
+        var givenName = context.Principal?.FindFirst(ClaimTypes.GivenName)?.Value;
+        var surname = context.Principal?.FindFirst(ClaimTypes.Surname)?.Value;
 
-        // Debugging: logga namn
-        Console.WriteLine($"Processing user: {name}");
-
-        // Debugging: logga alla claims
-        var claims = context.Principal.Claims;
-        foreach (var claim in claims)
-        {
-            Console.WriteLine($"Claim Type: {claim.Type}, Claim Value: {claim.Value}");
-        }
-
-        // Hantera givenname och surname för att skapa ett fullständigt namn om möjligt
-        var givenName = context.Principal?.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname")?.Value;
-        var surname = context.Principal?.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname")?.Value;
-        
+        // Kombinera givenName och surname om name inte finns
         if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(givenName) && !string.IsNullOrEmpty(surname))
         {
-            // Kombinera förnamn och efternamn om name inte finns
             name = $"{givenName} {surname}";
         }
 
-        // Om namn fortfarande är null eller tomt, använd ett standardvärde
-        if (string.IsNullOrEmpty(name))
-        {
-            name = "Unknown User"; // Fallback namn
-        }
+        // Sätt fallback-namn om name fortfarande är tomt
+        name ??= "Unknown User";
 
+        // Verifiera att issuer och subject finns
         if (subject == null || issuer == null)
         {
             Console.WriteLine("Missing required claims.");
             return;
         }
 
-        var account = db.Accounts
-            .FirstOrDefault(p => p.OpenIDIssuer == issuer && p.OpenIDSubject == subject);
+        var account = db.Accounts.FirstOrDefault(p => p.OpenIDIssuer == issuer && p.OpenIDSubject == subject);
+        var email = context.Principal?.FindFirstValue(ClaimTypes.Email);
 
         if (account == null)
         {
@@ -89,16 +83,16 @@ builder.Services.AddAuthentication(options =>
             {
                 OpenIDIssuer = issuer,
                 OpenIDSubject = subject,
-                Name = name, // Sätt användarnamn
-                Email = context.Principal?.FindFirstValue(ClaimTypes.Email) // Spara e-postadressen
+                Name = name,
+                Email = email
             };
             db.Accounts.Add(account);
         }
-        else
+        else if (account.Name != name || account.Email != email)
         {
-            // Användare finns - uppdatera vid behov
-            account.Name = name; // Uppdatera namn
-            account.Email = context.Principal?.FindFirstValue(ClaimTypes.Email); // Uppdatera e-postadressen
+            // Uppdatera namn eller e-post om de har ändrats
+            account.Name = name;
+            account.Email = email;
         }
 
         try
@@ -111,8 +105,6 @@ builder.Services.AddAuthentication(options =>
         }
     };
 })
-
-
 .AddOpenIdConnect("Google", options =>
 {
     options.Authority = "https://accounts.google.com";
@@ -126,27 +118,25 @@ builder.Services.AddAuthentication(options =>
     options.SaveTokens = true;
     options.GetClaimsFromUserInfoEndpoint = true;
 
-    // Lägg till EndSessionEndpoint för att hantera logout korrekt
     options.SignedOutCallbackPath = "/signout-callback-google";
     options.Events.OnSignedOutCallbackRedirect = context =>
     {
-        context.Response.Redirect("https://google-auth-mysql-dkgacucuh0fbethz.westeurope-01.azurewebsites.net/signin-oidc-google");
+        context.Response.Redirect("/signin-oidc-google");
         return Task.CompletedTask;
     };
 
-    // Debugging event for claims
     options.Events.OnTokenValidated = context =>
     {
-        var claims = context.Principal.Claims;
-        foreach (var claim in claims)
+        if (context.Properties.Items.ContainsKey("ClaimsProcessed"))
         {
-            Console.WriteLine($"Claim Type: {claim.Type}, Claim Value: {claim.Value}");
+            Console.WriteLine("Claims already processed.");
+            return Task.CompletedTask;
         }
 
-        // Hantera namn från claims
-        var givenName = context.Principal?.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname")?.Value;
-        var surname = context.Principal?.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname")?.Value;
+        context.Properties.Items["ClaimsProcessed"] = "true";
         var name = context.Principal?.FindFirst("name")?.Value;
+        var givenName = context.Principal?.FindFirst(ClaimTypes.GivenName)?.Value;
+        var surname = context.Principal?.FindFirst(ClaimTypes.Surname)?.Value;
 
         if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(givenName) && !string.IsNullOrEmpty(surname))
         {
@@ -201,18 +191,10 @@ app.UseStaticFiles();
 app.UseRouting();
 
 // Middleware för autentisering och auktorisering
-app.UseAuthentication(); // Se till att denna är före UseAuthorization
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
 app.MapControllers();
-
-// Skapa exempeldata om det inte finns
-//using (var scope = app.Services.CreateScope())
-//{
-//   var services = scope.ServiceProvider;
-//   var context = services.GetRequiredService<AppDbContext>();
-//  SampleData.Create(context);
-//}
 
 app.Run();
