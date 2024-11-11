@@ -1,0 +1,24 @@
+@page
+@model GoogleAuth.Pages.Account.LoginModel
+@{
+    ViewData["Title"] = "Logga in";
+}
+
+<div style="text-align: center; padding-top: 50px;">
+    <h1>Logga in</h1>
+    <a href="/login" class="button">Logga in med Google</a>
+</div>
+
+<style>
+    .button {
+        padding: 10px 20px;
+        background-color: #4285F4;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        font-size: 16px;
+    }
+    .button:hover {
+        background-color: #357ae8;
+    }
+</style>

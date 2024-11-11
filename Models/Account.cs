@@ -1,4 +1,4 @@
-﻿namespace DataTrust.Models
+namespace DataTrust.Models
 {
     public class Account
     {

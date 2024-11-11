@@ -7,28 +7,29 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.Extensions.Logging;
 using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// URL för de två separata Azure Key Vaults
-var dbKeyVaultUrl = "https://database-application.vault.azure.net/"; // Vault för databasanslutning
-var googleAuthKeyVaultUrl = "https://googleauthapp.vault.azure.net/"; // Vault för Google OAuth
+// URLs for the two separate Azure Key Vaults
+var dbKeyVaultUrl = "https://database-application.vault.azure.net/"; // Vault for database connection
+var googleAuthKeyVaultUrl = "https://googleauthapp.vault.azure.net/"; // Vault for Google OAuth
 
-// Skapa SecretClient för varje Vault
+// Create SecretClient for each Vault
 var dbSecretClient = new SecretClient(new Uri(dbKeyVaultUrl), new DefaultAzureCredential());
 var googleAuthSecretClient = new SecretClient(new Uri(googleAuthKeyVaultUrl), new DefaultAzureCredential());
 
-// Hämta känsliga värden från respektive Key Vault
-var dbConnectionString = dbSecretClient.GetSecret("SqlConnection").Value.Value;
+// Fetch sensitive values from respective Key Vaults
+var dbConnectionString = dbSecretClient.GetSecret("SqlConnectionNew").Value.Value;
 var googleClientId = googleAuthSecretClient.GetSecret("ClientId").Value.Value;
 var googleClientSecret = googleAuthSecretClient.GetSecret("ClientSecret").Value.Value;
 
-// Loggning konfigurerad här innan tjänsterna låses
+// Logging configuration before services are locked
 builder.Logging.AddConsole();
-builder.Logging.SetMinimumLevel(LogLevel.Debug); // För detaljerad loggning
+builder.Logging.SetMinimumLevel(LogLevel.Debug); // For detailed logging
 
-// Lägg till autentisering och cookie-hantering
+// Add authentication and cookie handling
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
@@ -36,9 +37,10 @@ builder.Services.AddAuthentication(options =>
 })
 .AddCookie(options =>
 {
+    // Cookie configuration
     options.Events.OnValidatePrincipal = async context =>
     {
-        // För att undvika upprepad bearbetning av samma användare under sessionen
+        // Avoid reprocessing the same user during the session
         if (context.Properties.Items.ContainsKey("Processed"))
         {
             Console.WriteLine("User claims already processed for this session.");
@@ -52,21 +54,21 @@ builder.Services.AddAuthentication(options =>
         string subject = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
         string issuer = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Issuer;
 
-        // Försök att hämta namn direkt från claims
+        // Attempt to fetch name directly from claims
         var name = context.Principal?.FindFirst("name")?.Value;
         var givenName = context.Principal?.FindFirst(ClaimTypes.GivenName)?.Value;
         var surname = context.Principal?.FindFirst(ClaimTypes.Surname)?.Value;
 
-        // Kombinera givenName och surname om name inte finns
+        // Combine givenName and surname if name is not available
         if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(givenName) && !string.IsNullOrEmpty(surname))
         {
             name = $"{givenName} {surname}";
         }
 
-        // Sätt fallback-namn om name fortfarande är tomt
+        // Set fallback name if name is still null
         name ??= "Unknown User";
 
-        // Verifiera att issuer och subject finns
+        // Validate issuer and subject
         if (subject == null || issuer == null)
         {
             Console.WriteLine("Missing required claims.");
@@ -78,7 +80,7 @@ builder.Services.AddAuthentication(options =>
 
         if (account == null)
         {
-            // Första inloggning - skapa användaren
+            // First-time login - create user
             account = new Account
             {
                 OpenIDIssuer = issuer,
@@ -90,7 +92,7 @@ builder.Services.AddAuthentication(options =>
         }
         else if (account.Name != name || account.Email != email)
         {
-            // Uppdatera namn eller e-post om de har ändrats
+            // Update name or email if they have changed
             account.Name = name;
             account.Email = email;
         }
@@ -111,69 +113,38 @@ builder.Services.AddAuthentication(options =>
     options.ClientId = googleClientId;
     options.ClientSecret = googleClientSecret;
     options.ResponseType = OpenIdConnectResponseType.Code;
-    options.CallbackPath = "/signin-oidc-google";
+    options.CallbackPath = "/signin-oidc-google"; // Callback path after successful login
+    options.SignedOutRedirectUri = "/logout-success"; // Ensure a correct redirect after logout
     options.Scope.Add("openid");
     options.Scope.Add("profile");
     options.Scope.Add("email");
     options.SaveTokens = true;
     options.GetClaimsFromUserInfoEndpoint = true;
-
-    options.SignedOutCallbackPath = "/signout-callback-google";
-    options.Events.OnSignedOutCallbackRedirect = context =>
-    {
-        context.Response.Redirect("/signin-oidc-google");
-        return Task.CompletedTask;
-    };
-
-    options.Events.OnTokenValidated = context =>
-    {
-        if (context.Properties.Items.ContainsKey("ClaimsProcessed"))
-        {
-            Console.WriteLine("Claims already processed.");
-            return Task.CompletedTask;
-        }
-
-        context.Properties.Items["ClaimsProcessed"] = "true";
-        var name = context.Principal?.FindFirst("name")?.Value;
-        var givenName = context.Principal?.FindFirst(ClaimTypes.GivenName)?.Value;
-        var surname = context.Principal?.FindFirst(ClaimTypes.Surname)?.Value;
-
-        if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(givenName) && !string.IsNullOrEmpty(surname))
-        {
-            name = $"{givenName} {surname}";
-        }
-
-        Console.WriteLine($"Full Name: {name ?? "Name not found"}");
-
-        return Task.CompletedTask;
-    };
 });
 
-// Lägg till auktorisering och fallback-policy
-builder.Services.AddAuthorization(options =>
-{
-    options.FallbackPolicy = new AuthorizationPolicyBuilder()
-        .RequireAuthenticatedUser()
-        .Build();
-});
 
-// Lägg till Razor Pages och Controllers
+
+// Add authorization and fallback policy
+//builder.Services.AddAuthorization(options =>
+//{
+//    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+//       .RequireAuthenticatedUser()
+//     .Build();
+//});
+
+// Add Razor Pages and Controllers
 builder.Services.AddRazorPages().AddRazorRuntimeCompilation();
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(dbConnectionString));  // Använder Connection String från Databas Key Vault
+    options.UseSqlServer(dbConnectionString));  // Use connection string from Database Key Vault
 builder.Services.AddControllers();
 
-// Lägg till Swagger
+// Add Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Lägg till HttpContextAccessor för att komma åt HTTP-sammanhang i controllers
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<AccessControl>();
-
 var app = builder.Build();
 
-// HSTS och utvecklingskonfiguration
+// HSTS and development configuration
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error");
@@ -188,11 +159,43 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
+
+// Enable CORS
+app.UseCors("AllowSpecificOrigin");
+
 app.UseRouting();
 
-// Middleware för autentisering och auktorisering
+// Authentication and authorization middleware
 app.UseAuthentication();
 app.UseAuthorization();
+
+
+app.MapGet("/login", async context =>
+{
+    await context.ChallengeAsync("Google", new AuthenticationProperties
+    {
+        RedirectUri = "/"
+    });
+});
+
+// Logout route
+app.MapGet("/logout", async context =>
+{
+    // Sign out from the authentication scheme (cookie)
+    await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme); // Removes the cookie
+
+    // Sign out from Google authentication
+    await context.SignOutAsync("Google"); // This will also remove the Google login session
+
+    // Redirect to homepage or login page after logout
+    context.Response.Redirect("/login"); // Redirect user to a specified page after logout
+});
+
+
+// Logout success page
+app.MapGet("/logout-success", () => Results.Content("You have successfully logged out."));
+
+app.MapGet("/", () => Results.Redirect("/account/login"));
 
 app.MapRazorPages();
 app.MapControllers();
