@@ -1,9 +1,11 @@
 using Azure.Identity;
+using System.Text.Json;
 using Azure.Security.KeyVault.Secrets;
 using DataTrust.Data;
 using DataTrust.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Facebook;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -15,32 +17,53 @@ var builder = WebApplication.CreateBuilder(args);
 // URLs for the two separate Azure Key Vaults
 var dbKeyVaultUrl = "https://database-application.vault.azure.net/"; // Vault for database connection
 var googleAuthKeyVaultUrl = "https://googleauthapp.vault.azure.net/"; // Vault for Google OAuth
+var facebookAuthKeyVaultUrl = "https://googleauthapp.vault.azure.net/"; // Vault for Facebook OAuth (updated URL)
 
-// Create SecretClient for each Vault
+// Create SecretClient for each Vault and fetch sensitive values from respective Key Vaults
 var dbSecretClient = new SecretClient(new Uri(dbKeyVaultUrl), new DefaultAzureCredential());
 var googleAuthSecretClient = new SecretClient(new Uri(googleAuthKeyVaultUrl), new DefaultAzureCredential());
+var facebookAuthSecretClient = new SecretClient(new Uri(facebookAuthKeyVaultUrl), new DefaultAzureCredential());
 
-// Fetch sensitive values from respective Key Vaults
-var dbConnectionString = dbSecretClient.GetSecret("SqlConnectionNew").Value.Value;
-var googleClientId = googleAuthSecretClient.GetSecret("ClientId").Value.Value;
-var googleClientSecret = googleAuthSecretClient.GetSecret("ClientSecret").Value.Value;
+string dbConnectionString, googleClientId, googleClientSecret, facebookAppId, facebookAppSecret;
+
+try
+{
+    dbConnectionString = dbSecretClient.GetSecret("SqlConnectionNew").Value.Value;
+    googleClientId = googleAuthSecretClient.GetSecret("ClientId").Value.Value;
+    googleClientSecret = googleAuthSecretClient.GetSecret("ClientSecret").Value.Value;
+    facebookAppId = facebookAuthSecretClient.GetSecret("AppId").Value.Value;
+    facebookAppSecret = facebookAuthSecretClient.GetSecret("AppSecret").Value.Value;
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Error fetching secrets: {ex.Message}");
+    throw;
+}
 
 // Logging configuration before services are locked
 builder.Logging.AddConsole();
 builder.Logging.SetMinimumLevel(LogLevel.Debug); // For detailed logging
 
+// Add session support
+builder.Services.AddDistributedMemoryCache();  // Add memory cache for session
+builder.Services.AddSession(options =>
+{
+    options.IdleTimeout = TimeSpan.FromMinutes(30);  // Set session timeout
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+});
+
 // Add authentication and cookie handling
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = "Google";
+    options.DefaultChallengeScheme = "Google";  // Default to Google
 })
 .AddCookie(options =>
 {
     // Cookie configuration
     options.Events.OnValidatePrincipal = async context =>
     {
-        // Avoid reprocessing the same user during the session
         if (context.Properties.Items.ContainsKey("Processed"))
         {
             Console.WriteLine("User claims already processed for this session.");
@@ -51,24 +74,20 @@ builder.Services.AddAuthentication(options =>
         var serviceProvider = context.HttpContext.RequestServices;
         using var db = new AppDbContext(serviceProvider.GetRequiredService<DbContextOptions<AppDbContext>>());
 
-        string subject = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
-        string issuer = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Issuer;
+        var subject = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+        var issuer = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Issuer;
 
-        // Attempt to fetch name directly from claims
         var name = context.Principal?.FindFirst("name")?.Value;
         var givenName = context.Principal?.FindFirst(ClaimTypes.GivenName)?.Value;
         var surname = context.Principal?.FindFirst(ClaimTypes.Surname)?.Value;
 
-        // Combine givenName and surname if name is not available
         if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(givenName) && !string.IsNullOrEmpty(surname))
         {
             name = $"{givenName} {surname}";
         }
 
-        // Set fallback name if name is still null
         name ??= "Unknown User";
 
-        // Validate issuer and subject
         if (subject == null || issuer == null)
         {
             Console.WriteLine("Missing required claims.");
@@ -80,7 +99,6 @@ builder.Services.AddAuthentication(options =>
 
         if (account == null)
         {
-            // First-time login - create user
             account = new Account
             {
                 OpenIDIssuer = issuer,
@@ -92,7 +110,6 @@ builder.Services.AddAuthentication(options =>
         }
         else if (account.Name != name || account.Email != email)
         {
-            // Update name or email if they have changed
             account.Name = name;
             account.Email = email;
         }
@@ -113,34 +130,77 @@ builder.Services.AddAuthentication(options =>
     options.ClientId = googleClientId;
     options.ClientSecret = googleClientSecret;
     options.ResponseType = OpenIdConnectResponseType.Code;
-    options.CallbackPath = "/signin-oidc-google"; // Callback path after successful login
-    options.SignedOutRedirectUri = "/logout-success"; // Ensure a correct redirect after logout
+    options.CallbackPath = "/signin-oidc-google";
+    options.SignedOutRedirectUri = "/logout-success";
     options.Scope.Add("openid");
     options.Scope.Add("profile");
     options.Scope.Add("email");
     options.SaveTokens = true;
     options.GetClaimsFromUserInfoEndpoint = true;
+    options.MetadataAddress = "https://accounts.google.com/.well-known/openid-configuration";
+
+    // Force the user to select an account on each login
+    options.Events.OnRedirectToIdentityProvider = context =>
+    {
+        context.ProtocolMessage.SetParameter("prompt", "select_account");
+        return Task.CompletedTask;
+    };
+})
+.AddFacebook(options =>
+{
+    options.AppId = facebookAppId;
+    options.AppSecret = facebookAppSecret;
+    options.CallbackPath = "/signin-facebook";
+    options.Scope.Add("email");
+    options.Scope.Add("public_profile");
+    options.SaveTokens = true;
+    options.Fields.Add("email");
+    options.Fields.Add("name");
+
+options.Events.OnRemoteFailure = async context =>
+{
+    var errorReason = context.Request.Query["error_reason"];
+    
+    // Om användaren nekar autentiseringen, hantera detta
+    if (errorReason == "user_denied")
+    {
+        // Här kan du omdirigera användaren till en annan sida eller visa ett meddelande
+        context.Response.Redirect("/account/login?error=user_denied");
+    }
+    else
+    {
+        // Hantera andra fel (om det finns)
+        context.Response.Redirect("/account/login?error=auth_failure");
+    }
+};
+
+
+
 });
 
 
 
-// Add authorization and fallback policy
-//builder.Services.AddAuthorization(options =>
-//{
-//    options.FallbackPolicy = new AuthorizationPolicyBuilder()
-//       .RequireAuthenticatedUser()
-//     .Build();
-//});
-
 // Add Razor Pages and Controllers
 builder.Services.AddRazorPages().AddRazorRuntimeCompilation();
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(dbConnectionString));  // Use connection string from Database Key Vault
+    options.UseSqlServer(dbConnectionString));
 builder.Services.AddControllers();
 
 // Add Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Define CORS policy for "AllowSpecificOrigin"
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowSpecificOrigin", policy =>
+    {
+        policy.WithOrigins("https://localhost:5000") // Replace with the frontend URL
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
 
 var app = builder.Build();
 
@@ -160,6 +220,8 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseStaticFiles();
 
+app.UseSession();  // Add session middleware here
+
 // Enable CORS
 app.UseCors("AllowSpecificOrigin");
 
@@ -170,34 +232,74 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 
-app.MapGet("/login", async context =>
+// Route for Google login
+app.MapGet("/login/google", async context =>
 {
-    await context.ChallengeAsync("Google", new AuthenticationProperties
+    var properties = new AuthenticationProperties
     {
-        RedirectUri = "/"
-    });
+        RedirectUri = "/",
+    };
+
+    properties.Items["prompt"] = "select_account";  // Force account selection
+
+    await context.ChallengeAsync("Google", properties);
 });
 
-// Logout route
+// Route for Facebook login
+app.MapGet("/login/facebook", async context =>
+{
+    var properties = new AuthenticationProperties
+    {
+        RedirectUri = "/",
+    };
+
+    properties.Items["prompt"] = "select_account";  // Force account selection
+
+    await context.ChallengeAsync("Facebook", properties);
+});
+
+
 app.MapGet("/logout", async context =>
 {
-    // Sign out from the authentication scheme (cookie)
-    await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme); // Removes the cookie
+    // Sign out from the local application
+    await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
 
-    // Sign out from Google authentication
-    await context.SignOutAsync("Google"); // This will also remove the Google login session
+    // Delete cookies and session data
+    context.Response.Cookies.Delete(".AspNetCore.Cookies"); // Cookie name used by ASP.NET Core
+    context.Session.Clear();
 
-    // Redirect to homepage or login page after logout
-    context.Response.Redirect("/login"); // Redirect user to a specified page after logout
+    // Logout from external providers if access token exists
+    var accessToken = context.User?.FindFirst("access_token")?.Value;
+
+    if (string.IsNullOrEmpty(accessToken))
+    {
+        context.Response.Redirect("/logout-success");
+    }
+    else
+    {
+        var googleLogoutUrl = "https://accounts.google.com/o/oauth2/revoke?token=" + accessToken;
+        context.Response.Redirect(googleLogoutUrl);
+    }
 });
 
-
-// Logout success page
-app.MapGet("/logout-success", () => Results.Content("You have successfully logged out."));
+app.MapGet("/logout-success", () =>
+{
+    return Results.Content(
+        "<html><body>" +
+        "<p>You have successfully logged out.</p>" +
+        "<a href='/' style='text-decoration: none;'>" +
+        "<button style='padding: 10px 20px; font-size: 16px;'>Log back in</button>" +
+        "</a>" +
+        "<script>" +
+        "setTimeout(function() { window.location.href = '/account/login'; }, 2000);" +
+        "</script>" +
+        "</body></html>",
+        "text/html"
+    );
+});
 
 app.MapGet("/", () => Results.Redirect("/account/login"));
 
 app.MapRazorPages();
-app.MapControllers();
 
 app.Run();

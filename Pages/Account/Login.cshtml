@@ -4,21 +4,104 @@
     ViewData["Title"] = "Logga in";
 }
 
-<div style="text-align: center; padding-top: 50px;">
-    <h1>Logga in</h1>
-    <a href="/login" class="button">Logga in med Google</a>
+<div class="container">
+    <div class="login-box">
+        <h1>Välkommen till Inloggning</h1>
+
+        <!-- Google Login Button -->
+        <a href="/login/google" class="google-button">Logga in med Google</a>
+
+        <!-- Facebook Login Button -->
+        <a href="/login/facebook" class="facebook-button">Logga in med Facebook</a>
+    </div>
 </div>
 
 <style>
-    .button {
-        padding: 10px 20px;
+    /* Background */
+    body {
+        margin: 0;
+        padding: 0;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: linear-gradient(to bottom right, #FF7E5F, #feb47b); /* Beautiful gradient */
+        font-family: 'Arial', sans-serif;
+    }
+
+    /* Container */
+    .container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        height: 100%;
+    }
+
+    /* Login Box */
+    .login-box {
+        text-align: center;
+        padding: 30px;
+        background-color: white;
+        border-radius: 8px;
+        box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
+        width: 300px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .login-box h1 {
+        margin-bottom: 20px;
+        color: #333;
+        font-size: 24px;
+        font-weight: bold;
+        text-align: center;
+    }
+
+    /* Google Login Button */
+    .google-button {
+        padding: 12px 20px;
         background-color: #4285F4;
         color: white;
         text-decoration: none;
         border-radius: 4px;
-        font-size: 16px;
+        font-size: 18px;
+        display: inline-block;
+        margin-top: 20px;
+        width: 100%;
+        text-align: center;
+        transition: background-color 0.3s ease;
     }
-    .button:hover {
+
+    .google-button:hover {
         background-color: #357ae8;
+    }
+
+    .google-button:active {
+        background-color: #2b6db1;
+    }
+
+    /* Facebook Login Button */
+    .facebook-button {
+        padding: 12px 20px;
+        background-color: #3b5998;
+        color: white;
+        text-decoration: none;
+        border-radius: 4px;
+        font-size: 18px;
+        display: inline-block;
+        margin-top: 20px;
+        width: 100%;
+        text-align: center;
+        transition: background-color 0.3s ease;
+    }
+
+    .facebook-button:hover {
+        background-color: #2d4373;
+    }
+
+    .facebook-button:active {
+        background-color: #1d2d44;
     }
 </style>

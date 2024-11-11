@@ -12,11 +12,14 @@ namespace GoogleAuth.Pages.Account
 
         public void OnGet()
         {
-            // Fetch user data from Claims (check for 'name', 'given_name', or 'email')
-            var userNameClaim = User.FindFirstValue("name") ?? User.FindFirstValue("given_name");
-            var userEmailClaim = User.FindFirstValue(ClaimTypes.Email);
+            // Försök att hämta användarnamn och e-post från Claims (Facebook och Google kan ha olika namn på claims)
+            var userNameClaim = User.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name") // Facebook eller OpenID
+                ?? User.FindFirstValue("name") // Google (default claim)
+                ?? User.FindFirstValue("given_name"); // Alternativt (t.ex. Google)
 
-            // Set the properties
+            var userEmailClaim = User.FindFirstValue(ClaimTypes.Email); // E-post (Google och Facebook använder samma)
+
+            // Sätt värden för användarnamn och e-post
             UserName = userNameClaim ?? "Unknown User";
             UserEmail = userEmailClaim ?? "No Email Available";
         }
