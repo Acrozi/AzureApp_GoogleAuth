@@ -4,6 +4,14 @@
     ViewData["Title"] = "Logga in";
 }
 
+@if (Request.Query["error"] == "user_denied")
+{
+    <div class="alert alert-warning">
+        Autentisering avbröts. Försök igen eller välj ett annat inloggningssätt.
+    </div>
+}
+
+
 <div class="container">
     <div class="login-box">
         <h1>Välkommen till Inloggning</h1>

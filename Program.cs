@@ -14,6 +14,10 @@ using System.Security.Claims;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Logging configuration before services are locked
+builder.Logging.AddConsole();
+builder.Logging.SetMinimumLevel(LogLevel.Debug); // For detailed logging
+
 // URLs for the two separate Azure Key Vaults
 var dbKeyVaultUrl = "https://database-application.vault.azure.net/"; // Vault for database connection
 var googleAuthKeyVaultUrl = "https://googleauthapp.vault.azure.net/"; // Vault for Google OAuth
@@ -39,10 +43,6 @@ catch (Exception ex)
     Console.WriteLine($"Error fetching secrets: {ex.Message}");
     throw;
 }
-
-// Logging configuration before services are locked
-builder.Logging.AddConsole();
-builder.Logging.SetMinimumLevel(LogLevel.Debug); // For detailed logging
 
 // Add session support
 builder.Services.AddDistributedMemoryCache();  // Add memory cache for session
@@ -150,33 +150,36 @@ builder.Services.AddAuthentication(options =>
 {
     options.AppId = facebookAppId;
     options.AppSecret = facebookAppSecret;
-    options.CallbackPath = "/signin-facebook";
+    options.CallbackPath = "/signin-facebook"; // Facebook's redirect URI after login
     options.Scope.Add("email");
     options.Scope.Add("public_profile");
     options.SaveTokens = true;
     options.Fields.Add("email");
     options.Fields.Add("name");
 
-options.Events.OnRemoteFailure = async context =>
-{
-    var errorReason = context.Request.Query["error_reason"];
-    
-    // Om användaren nekar autentiseringen, hantera detta
-    if (errorReason == "user_denied")
+    options.Events.OnRemoteFailure = async context =>
     {
-        // Här kan du omdirigera användaren till en annan sida eller visa ett meddelande
-        context.Response.Redirect("/account/login?error=user_denied");
-    }
-    else
-    {
-        // Hantera andra fel (om det finns)
-        context.Response.Redirect("/account/login?error=auth_failure");
-    }
-};
+        var errorReason = context.Request.Query["error_reason"];
+        var errorDescription = context.Request.Query["error_description"];
+        var error = context.Request.Query["error"];
+        var state = context.Request.Query["state"];
 
+        builder.Logging.AddConsole();
+        builder.Logging.SetMinimumLevel(LogLevel.Error);
 
+        Console.WriteLine($"Facebook Authentication failed. Error Reason: {errorReason}, Description: {errorDescription}, Error: {error}, State: {state}");
 
+        if (errorReason == "user_denied")
+        {
+            context.Response.Redirect("/account/login?error=user_denied");
+        }
+        else
+        {
+            context.Response.Redirect("/account/login?error=auth_failure");
+        }
+    };
 });
+
 
 
 
